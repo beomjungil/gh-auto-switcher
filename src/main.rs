@@ -63,7 +63,8 @@ fn run_management(args: &[OsString]) -> Result<(), String> {
 fn status() -> Result<(), String> {
     let cwd = env::current_dir()
         .map_err(|error| format!("failed to resolve current directory: {error}"))?;
-    let routing = runner::resolve_routing(&cwd, &[])?;
+    let real_gh = runner::find_real_gh()?;
+    let routing = runner::resolve_routing(&cwd, &[], &real_gh)?;
 
     println!("working-directory: {}", cwd.display());
     match &routing.account {
@@ -81,7 +82,15 @@ fn status() -> Result<(), String> {
                 "account-origin: {}",
                 account.origin.as_deref().unwrap_or("unknown")
             );
-            println!("account-source: Git config");
+            println!("account-source: github.account");
+        }
+        Some(gitconfig::AccountSelection::UserName(account)) => {
+            println!("account: {}", account.username);
+            println!(
+                "account-origin: {}",
+                account.origin.as_deref().unwrap_or("unknown")
+            );
+            println!("account-source: user.name matching gh profile");
         }
         Some(gitconfig::AccountSelection::Override(account)) => {
             println!("account: {account}");
@@ -112,7 +121,8 @@ fn status() -> Result<(), String> {
 fn doctor() -> Result<(), String> {
     let cwd = env::current_dir()
         .map_err(|error| format!("failed to resolve current directory: {error}"))?;
-    let routing = runner::resolve_routing(&cwd, &[])?;
+    let real_gh = runner::find_real_gh()?;
+    let routing = runner::resolve_routing(&cwd, &[], &real_gh)?;
 
     match routing.credential_mode {
         runner::CredentialMode::Stock => {
@@ -125,7 +135,6 @@ fn doctor() -> Result<(), String> {
             }
         }
         runner::CredentialMode::ProcessLocalAccount(account) => {
-            let real_gh = runner::find_real_gh()?;
             auth::token_for(&real_gh, &account)?;
             println!("Git account: {account}");
             println!("GitHub authentication: available");
@@ -152,6 +161,6 @@ fn shell_hook(value: Option<&OsString>) -> Result<(), String> {
 
 fn print_usage() {
     println!(
-        "gh-auto-switcher\n\nUsage:\n  gh auto-switcher status\n  gh auto-switcher doctor\n  gh auto-switcher shell-hook [bash|zsh|fish]\n  gh-auto-switcher exec -- [normal gh arguments]\n\nSet [github] account in Git config to select an authenticated gh account."
+        "gh-auto-switcher\n\nUsage:\n  gh auto-switcher status\n  gh auto-switcher doctor\n  gh auto-switcher shell-hook [bash|zsh|fish]\n  gh-auto-switcher exec -- [normal gh arguments]\n\nAccount selection:\n  GH_AUTO_SWITCHER_ACCOUNT\n  github.account\n  matching Git user.name and gh auth profile\n  stock gh when no matching profile exists"
     );
 }

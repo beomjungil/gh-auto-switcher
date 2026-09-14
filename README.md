@@ -1,162 +1,257 @@
 # gh-auto-switcher
 
-Use the normal [GitHub CLI (`gh`)](https://cli.github.com/) while selecting a
-stored GitHub account from Git's effective configuration for the current
-working context.
+Use the GitHub CLI (`gh`) with the GitHub account that matches your current
+Git repository context.
 
-[한국어 문서](README.ko.md) · [English usage guide](docs/en/usage.md) ·
-[한국어 사용법](docs/ko/usage.md) · [Architecture / 아키텍처](docs/en/architecture.md)
+`gh` can store more than one account for the same GitHub host, but its normal
+account selection is global for that host. This extension keeps account
+selection local to each command: Git chooses the current identity, and the
+launcher gives the real `gh` process only that account's token.
 
-## What it does
+## Install
 
-`gh-auto-switcher` is a launcher. For a repository whose effective
-Git configuration contains `github.account = work-github-username`, a normal command such
-as `gh pr list` retrieves that account's stored token and runs the real `gh`
-with the token in the child process environment.
+Requirements:
 
-It does not switch the globally active GitHub account, edit `hosts.yml`, write
-token files, or maintain a second repository-to-account database.
+- GitHub CLI (`gh`);
+- one or more authenticated GitHub accounts;
+- Bash, Zsh, or Fish if you want normal `gh ...` commands to switch accounts
+  transparently.
 
-## Features
-
-- Selects an authenticated GitHub account from Git's effective
-  `github.account` configuration;
-- injects the selected token only into the child `gh` process;
-- works with a transparent Bash, Zsh, or Fish shell hook;
-- leaves GitHub CLI's account store and authentication-management commands under
-  stock `gh` control.
-
-Automatic account injection is limited to an unambiguous `github.com` target.
-An applicable caller token may pass through for one unsupported Enterprise host,
-but conflicting host signals are rejected before credential precedence is
-applied. Host inference is conservative and does not try to understand every
-`gh` alias, extension, or API payload.
-
-Read the [routing and safety details](docs/en/usage.md#routing-and-safety) before
-using the launcher in automation.
-
-## Prerequisites
-
-- Git with support for the configuration patterns used in your examples;
-- GitHub CLI (`gh`) installed and authenticated for the accounts you select;
-- Bash, Zsh, or Fish for transparent `gh` commands;
-- Cargo/Rust only when using the source installation or local development path.
-
-## Quick start
-
-You can use either a prebuilt GitHub CLI extension or a source installation.
-
-### Option A: GitHub CLI extension
-
-Install the extension from GitHub. GitHub CLI selects the matching prebuilt
-release asset for the current platform:
+Install the prebuilt extension:
 
 ```sh
 gh extension install beomjungil/gh-auto-switcher
 gh auto-switcher help
 ```
 
-The release workflow is configured for `v*` tags and produces Linux amd64,
-macOS amd64, and macOS arm64 assets. If no release has been published yet,
-GitHub CLI falls back to the source extension and Cargo/Rust is required.
+The current release includes Linux amd64, macOS amd64, and macOS arm64
+binaries. GitHub CLI selects the matching binary for your platform.
 
-### Option B: standalone source executable
+## Authenticate the accounts
 
-Install the launcher on `PATH`:
-
-```sh
-cd /path/to/gh-auto-switcher
-cargo install --path .
-gh-auto-switcher help
-```
-
-Authenticate the accounts in the normal GitHub CLI store. Repeat the login
-flow as needed for each account:
+Authenticate every GitHub account you want to use with the normal GitHub CLI
+commands. GitHub CLI keeps these profiles; this extension does not modify them.
 
 ```sh
 gh auth login --hostname github.com
 gh auth status --hostname github.com
 ```
 
-Set the account convention in a Git config scope that matches your workflow:
+Run the login flow again when adding another account. Confirm that the logins
+are the GitHub usernames you expect:
 
 ```sh
-git config --global github.account personal-github-username
+gh auth status --hostname github.com
 ```
 
-Source the hook for your current shell:
+## How an account is selected
+
+For each command, the launcher reads Git's effective configuration in the
+current working directory. The first applicable rule wins:
+
+1. `GH_AUTO_SWITCHER_ACCOUNT` selects an account for one process;
+2. `github.account` explicitly selects an account;
+3. `user.name` selects an account when it is a valid GitHub username and the
+   same authenticated `gh` profile exists;
+4. if no matching profile exists, the real `gh` runs unchanged.
+
+`github.account` is optional. Use it when your Git commit identity is not the
+same as your GitHub login.
+
+For example, this needs no extra setting when the Git identity is also the
+GitHub username:
+
+```ini
+[user]
+    name = beomjungil
+```
+
+If the displayed Git identity differs from the GitHub username, add the
+explicit account key:
+
+```ini
+[user]
+    name = Beom Jungil
+
+[github]
+    account = beomjungil
+```
+
+Git evaluates local, global, and `includeIf` configuration normally. This also
+works for repository-specific account selection:
+
+```ini
+# ~/.gitconfig
+[user]
+    name = beomjungil
+
+[includeIf "hasconfig:remote.*.url:https://github.com/healingpaper-solution/**"]
+    path = ~/.gitconfig-healingpaper
+```
+
+```ini
+# ~/.gitconfig-healingpaper
+[user]
+    name = carter-hp
+```
+
+Check the effective values and their origins with:
 
 ```sh
-# Bash, after `gh extension install beomjungil/gh-auto-switcher`
+git config --get user.name
+git config --get github.account
+git config --show-origin --get user.name
+git config --show-origin --get github.account
+gh auth status --hostname github.com
+```
+
+An invalid display name or a `user.name` without a matching authenticated
+profile does not cause a different account to be guessed. The normal `gh`
+behavior is preserved. An explicit `github.account` or
+`GH_AUTO_SWITCHER_ACCOUNT` that cannot be authenticated fails clearly instead
+of silently falling back.
+
+## Choose how to run commands
+
+### Option A: transparent normal `gh` commands
+
+Use this when you want commands such as `gh pr list` to select an account
+based on the current repository. A shell hook is required because the GitHub
+CLI extension itself cannot replace the `gh` executable.
+
+The hook does not edit your shell startup file. Add the command for your shell
+to your startup file, or evaluate it only in the current shell.
+
+Bash:
+
+```sh
 eval "$(gh auto-switcher shell-hook bash)"
-
-# Zsh, after `gh extension install beomjungil/gh-auto-switcher`
-eval "$(gh auto-switcher shell-hook zsh)"
-
-# Fish, after `gh extension install beomjungil/gh-auto-switcher`
-source (gh auto-switcher shell-hook fish | psub)
-
-# Or use the standalone executable from Option B:
-# eval "$(gh-auto-switcher shell-hook bash)"
 ```
 
-Check the resolved account without printing a token, then use ordinary
-commands:
+Zsh:
+
+```sh
+eval "$(gh auto-switcher shell-hook zsh)"
+```
+
+Fish:
+
+```fish
+source (gh auto-switcher shell-hook fish | psub)
+```
+
+After the hook is active, use ordinary commands:
 
 ```sh
 gh auto-switcher status
 gh auto-switcher doctor
 gh pr list
+gh issue list
 gh api repos/OWNER/REPOSITORY
 ```
 
-For conditional includes, per-command overrides, shell removal, and
-troubleshooting, see the [English usage guide](docs/en/usage.md) or
-[한국어 사용법](docs/ko/usage.md).
+The hook is only a thin function. It does not change directories, export a
+token in the parent shell, or change GitHub CLI's active account.
 
-## Documentation map
+### Option B: explicit launcher commands without a shell hook
 
-| Need | English | 한국어 |
-| --- | --- | --- |
-| Get started | This README | [README.ko.md](README.ko.md) |
-| Install and operate the launcher | [Usage](docs/en/usage.md) | [사용법](docs/ko/usage.md) |
-| Understand design and guarantees | [Architecture](docs/en/architecture.md) | [아키텍처](docs/ko/architecture.md) |
-
-## Security model
-
-- The selected token is requested through the real `gh auth token` command.
-- Token output is captured privately and is never printed or persisted.
-- The token is supplied only to the child `gh` process as `GH_TOKEN`.
-- Authentication-management commands such as `gh auth login`, `logout`,
-  `switch`, `refresh`, `token`, and `status` use stock `gh` behavior.
-- A configured account that cannot provide a token fails clearly; it does not
-  silently fall back to another account.
-
-See [Architecture: credential lifecycle](docs/en/architecture.md#credential-lifecycle)
-for the complete flow.
-
-## Development
-
-For local extension development, run the install command from the project
-directory. GitHub CLI manages it as a link to that checkout:
+A shell hook is not needed when you call the launcher explicitly:
 
 ```sh
-cd /path/to/gh-auto-switcher
-gh extension install .
+gh auto-switcher exec -- pr list
+gh auto-switcher exec -- api repos/OWNER/REPOSITORY
 ```
 
-Source checks and tests:
+For a standalone binary installed on `PATH`, use:
 
 ```sh
+gh-auto-switcher exec -- pr list
+```
+
+Without the hook or an explicit `exec` call, a normal `gh pr list` is just the
+stock GitHub CLI and this extension is not involved.
+
+For commands outside a repository or for a one-off choice, use the process
+override:
+
+```sh
+GH_AUTO_SWITCHER_ACCOUNT=carter-hp gh auto-switcher exec -- pr list
+```
+
+## Inspect the selected route
+
+`status` shows the account source, target host, and credential mode without
+printing a token:
+
+```sh
+gh auto-switcher status
+```
+
+`doctor` verifies that the selected account can provide a token through the
+normal GitHub CLI credential store. It does not make an API request:
+
+```sh
+gh auto-switcher doctor
+```
+
+## What the launcher changes
+
+- It supplies the selected token only to the child `gh` process.
+- It never changes GitHub CLI's globally active account.
+- It never edits `hosts.yml`, stores tokens, or creates a second account mapping
+  database.
+- Explicit applicable `GH_TOKEN`/`GITHUB_TOKEN` values are preserved and take
+  precedence over configured account selection.
+- Authentication-management commands such as `gh auth login`, `logout`,
+  `switch`, `refresh`, `token`, and `status` use the real `gh` behavior.
+- Automatic token injection is limited to an unambiguous `github.com` target.
+  Conflicting host signals are rejected rather than guessed.
+
+A direct executable path such as `/opt/homebrew/bin/gh pr list`, a script that
+does not source the hook, and another shell function that bypasses the launcher
+will not be intercepted.
+
+## Troubleshooting
+
+See the [English usage guide](docs/en/usage.md) for detailed routing, shell,
+conditional-include, host, and failure behavior. The [architecture guide](docs/en/architecture.md)
+describes the security boundaries.
+
+Useful checks:
+
+```sh
+type -a gh
+gh auto-switcher status
+git config --show-origin --get user.name
+git config --show-origin --get github.account
+gh auth status --hostname github.com
+```
+
+If the hook is not listed before the real `gh` in `type -a gh`, evaluate the
+hook again in the current shell. If no matching `user.name` profile exists,
+that is expected to result in normal stock `gh` behavior.
+
+## Contribute
+
+Clone the repository and run the local checks:
+
+```sh
+git clone https://github.com/beomjungil/gh-auto-switcher.git
+cd gh-auto-switcher
 cargo fmt --check
-cargo test
+cargo test --locked
 cargo clippy --all-targets -- -D warnings
-cargo build --release
-python3 -m pip install --user PyYAML==6.0.2
+cargo build --release --locked
 python3 tests/release_workflow_test.py
 ```
 
-The tests use real Git, isolated temporary configuration, fake `gh`
-executables, actual shell processes, an isolated local `gh extension install`
-run, and a prebuilt-extension execution path. They do not use live credentials or
-modify the user's Git, shell, or GitHub CLI extension configuration.
+To test the extension entrypoint locally:
+
+```sh
+gh extension install .
+gh auto-switcher help
+```
+
+The test suite uses isolated Git and GitHub CLI fixtures and never changes your
+personal Git configuration, credentials, shell startup files, or installed
+extension configuration.

@@ -214,58 +214,73 @@ functions --erase gh
 If another tool installed a `gh` function before this one, save or restore it
 rather than erasing it blindly.
 
-## 4. Configure the account convention
+## 4. Configure account selection
 
-The launcher reads the effective value of `github.account` through Git itself:
+The launcher reads Git's effective configuration in the current working
+directory. The selection order is:
+
+1. `GH_AUTO_SWITCHER_ACCOUNT` for one process;
+2. `github.account` as an explicit account login;
+3. `user.name` when it is a valid GitHub login with a matching authenticated
+   `gh` profile;
+4. stock `gh` when no matching profile exists.
+
+Inspect the values and their origins:
 
 ```sh
+git config --get user.name
 git config --get github.account
+git config --show-origin --get user.name
+git config --show-origin --get github.account
 ```
 
-Set a default account globally:
+When `user.name` already equals a logged-in GitHub username, no extra
+configuration is needed:
 
-```sh
-git config --global github.account personal-github-username
+```ini
+[user]
+    name = beomjungil
 ```
 
-Or set the account only for one repository:
+Use `github.account` when the Git identity is a display name or otherwise
+differs from the GitHub login:
 
-```sh
-cd ~/src/customer-repository
-git config --local github.account work-github-username
+```ini
+[user]
+    name = Beom Jungil
+
+[github]
+    account = beomjungil
 ```
 
-The value must be 1–39 ASCII letters, numbers, or hyphens. Empty values,
-slashes, spaces, and other malformed values fail instead of selecting a
-fallback account.
+The explicit account value must be 1–39 ASCII letters, numbers, or hyphens.
+Empty values, slashes, spaces, and other malformed explicit values fail
+instead of selecting a different account. An explicit account without an
+available token also fails clearly. The implicit `user.name` path falls back
+to stock `gh` when the value is not a valid login or no matching profile
+exists.
 
 ### Conditional includes
 
 Git evaluates the configuration. The launcher does not reimplement Git's
 condition syntax, so normal include and precedence behavior is preserved.
 
-A default account can be combined with a repository-path condition:
+For example, a remote URL condition can choose a different Git identity and
+therefore a different matching GitHub profile:
 
 ```ini
 # ~/.gitconfig
-[github]
-    account = personal-github-username
+[user]
+    name = personal-github-username
 
-[includeIf "gitdir:~/src/customer/**"]
+[includeIf "hasconfig:remote.*.url:https://github.com/customer/**"]
     path = ~/.gitconfig-customer
 ```
 
 ```ini
 # ~/.gitconfig-customer
-[github]
-    account = work-github-username
-```
-
-A remote URL condition can select an account for a company organization:
-
-```ini
-[includeIf "hasconfig:remote.*.url:https://github.com/customer/**"]
-    path = ~/.gitconfig-customer
+[user]
+    name = work-github-username
 ```
 
 Other Git-supported conditions, including `gitdir`, `gitdir/i`, `onbranch`,
@@ -273,13 +288,37 @@ nested includes, linked worktrees, and normal local/global precedence are
 resolved by the installed Git version. The integration suite exercises these
 patterns with real Git.
 
-Do not use `user.name` or `user.email` as the account setting. They are not
-used to infer a GitHub login.
+## 5. Run commands
 
-## 5. Run normal commands
+There are two ways to use the launcher. Choose the one that matches how you
+want to invoke `gh`.
 
-After the hook is active and `github.account` resolves to a valid account,
-ordinary commands can be typed normally:
+### Transparent normal `gh` commands
+
+A shell hook is required when you want ordinary commands such as `gh pr list`
+to go through the launcher. The GitHub CLI extension cannot replace the `gh`
+executable by itself. The hook does not edit shell startup files automatically.
+
+For Bash, add this to the shell startup file or evaluate it for the current
+shell:
+
+```sh
+eval "$(gh auto-switcher shell-hook bash)"
+```
+
+For Zsh, use:
+
+```sh
+eval "$(gh auto-switcher shell-hook zsh)"
+```
+
+For Fish:
+
+```fish
+source (gh auto-switcher shell-hook fish | psub)
+```
+
+Then ordinary commands use the selected account:
 
 ```sh
 gh pr list
@@ -290,14 +329,30 @@ gh repo view OWNER/REPOSITORY
 
 Each invocation re-evaluates Git configuration from the current working
 context. A branch or remote change is considered by the next command without a
-`cd` hook.
+`cd` hook. Without the hook, a normal `gh pr list` is stock `gh` and this
+launcher is not involved.
+
+### Explicit launcher commands
+
+A shell hook is not needed when the launcher is invoked explicitly:
+
+```sh
+gh auto-switcher exec -- pr list
+gh auto-switcher exec -- api repos/OWNER/REPOSITORY
+```
+
+With a standalone binary on `PATH`, use:
+
+```sh
+gh-auto-switcher exec -- pr list
+```
 
 For a command outside a repository or targeting another repository, select an
 account explicitly for that process:
 
 ```sh
-GH_AUTO_SWITCHER_ACCOUNT=work-github-username gh repo clone customer/example
-GH_AUTO_SWITCHER_ACCOUNT=personal-github-username gh --repo personal-github-username/example pr list
+GH_AUTO_SWITCHER_ACCOUNT=work-github-username gh auto-switcher exec -- repo clone customer/example
+GH_AUTO_SWITCHER_ACCOUNT=personal-github-username gh auto-switcher exec -- --repo personal-github-username/example pr list
 ```
 
 The override is an environment variable, so it does not persist in the
@@ -332,8 +387,9 @@ that a remote operation will succeed.
 
 | Input | Meaning |
 | --- | --- |
-| `github.account` | Effective Git config key used as the stored account login. |
-| `GH_AUTO_SWITCHER_ACCOUNT` | Per-process account override. |
+| `github.account` | Optional effective Git config key that explicitly selects the stored account login. |
+| `user.name` | Fallback Git identity; used when it is a valid GitHub login with a matching authenticated profile. |
+| `GH_AUTO_SWITCHER_ACCOUNT` | Per-process account override with highest account-selection precedence. |
 | `GH_AUTO_SWITCHER_REAL_GH` | Explicit real `gh` executable path. |
 | `GH_TOKEN`, `GITHUB_TOKEN` | Explicit token family for `github.com` and `*.ghe.com`; never overwritten. |
 | `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN` | Explicit token family for other Enterprise hosts; never overwritten. |
@@ -358,12 +414,16 @@ The decision order is intentionally conservative:
    `github.com` and `*.ghe.com`, the applicable variables are `GH_TOKEN` and
    `GITHUB_TOKEN`; other Enterprise hosts use the Enterprise variables. This
    precedence can bypass an invalid `github.account`.
-4. With no applicable explicit token, a valid configured account is used only
-   for an unambiguous `github.com` target.
-5. A missing account and no caller token preserve stock `gh` behavior. In this
-   case the launcher may skip host resolution rather than inventing a target.
-6. An unauthenticated configured account fails clearly. It never falls back to
-   another stored account.
+4. With no applicable explicit token, `github.account` is used when present.
+   Otherwise, `user.name` is used only when it is a valid GitHub login with a
+   matching authenticated profile, and only for an unambiguous `github.com`
+   target.
+5. A missing or unmatched `user.name` and no caller token preserve stock `gh`
+   behavior. In this case the launcher may skip host resolution rather than
+   inventing a target.
+6. An explicit account that cannot provide a token fails clearly. It never falls
+   back to another stored account. An implicit `user.name` candidate with no
+   matching profile is the exception and intentionally uses stock `gh`.
 
 A single unsupported Enterprise target is passed through only when the
 applicable explicit token already exists. Unsupported automatic routing is
@@ -383,13 +443,15 @@ gh auto-switcher status
 git config --show-origin --get github.account
 ```
 
-If `type -a gh` does not show the function, source the shell hook again. If
-`github.account` is missing, stock `gh` behavior is expected.
+If `type -a gh` does not show the function, source the shell hook again. If you
+are using an explicit `gh auto-switcher exec -- ...` command, no shell hook is
+needed. A missing or unmatched `github.account` and `user.name` uses stock `gh`
+behavior.
 
 ### `github.account is empty` or `invalid GitHub account`
 
-Fix or remove the effective setting. Inspect the normal Git result and its
-origin:
+Fix or remove the effective explicit setting. Inspect the normal Git result and
+its origin:
 
 ```sh
 git config --show-origin --get-all github.account
@@ -397,18 +459,24 @@ git config --show-origin --get-all github.account
 
 An applicable explicit caller token takes precedence over account validation
 errors for that invocation, but correcting the configuration is still
-recommended.
+recommended. Without `github.account`, the launcher checks whether the
+configured `user.name` is a valid login with a matching authenticated profile;
+otherwise it preserves stock `gh` behavior.
 
 ### `no GitHub authentication found for account`
 
-Authenticate that exact login with stock `gh`, then retry:
+For an explicit `github.account` or `GH_AUTO_SWITCHER_ACCOUNT`, authenticate
+that exact login with stock `gh`, then retry:
 
 ```sh
 gh auth login --hostname github.com
 gh auth status --hostname github.com
 ```
 
-The launcher intentionally does not try a different account.
+The launcher intentionally does not try a different account. If the account
+came only from `user.name`, a missing matching profile normally results in
+stock `gh`; a profile that exists but cannot provide its token is reported as
+an authentication error.
 
 ### `unsupported target host` or `ambiguous GitHub host context`
 
