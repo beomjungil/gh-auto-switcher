@@ -221,9 +221,13 @@ directory. The selection order is:
 
 1. `GH_AUTO_SWITCHER_ACCOUNT` for one process;
 2. `github.account` as an explicit account login;
-3. `user.name` when it is a valid GitHub login with a matching authenticated
-   `gh` profile;
+3. `user.name` when it is a valid GitHub login with a matching stored GitHub
+   CLI profile name;
 4. stock `gh` when no matching profile exists.
+
+The implicit profile check reads the stored `github.com` profile names from
+GitHub CLI's `hosts.yml`. It does not run `gh auth status` or validate a token;
+token availability is checked only when a routed command needs the account.
 
 Inspect the values and their origins:
 

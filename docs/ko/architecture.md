@@ -58,10 +58,12 @@ Git subprocess는 호출자의 Git 관련 환경을 상속하므로 Git이 다�
 - `GIT_CONFIG_*` command-scope 설정.
 
 launcher가 특별한 의미를 부여하는 것은 명시적인 `github.account` 값입니다.
-이 key가 없으면 유효한 `user.name`을 account 후보로 보고, 동일한 GitHub CLI
-인증 profile이 있을 때만 사용합니다. `user.email`은 사용하지 않습니다.
-명시 account 값은 `gh auth token --user`에 안전하게 전달할 수 있도록 ASCII
-문자·숫자·하이픈으로 구성된 1–39자여야 합니다.
+이 key가 없으면 유효한 `user.name`을 account 후보로 보고, GitHub CLI 설정에
+`github.com`용으로 저장된 동일한 profile 이름이 있을 때만 사용합니다. profile
+이름 조회는 `hosts.yml`을 읽으며 `gh auth status`를 실행하거나 token을 검증하지
+않습니다. `user.email`은 사용하지 않습니다. 명시 account 값은 `gh auth token
+--user`에 안전하게 전달할 수 있도록 ASCII 문자·숫자·하이픈으로 구성된
+1–39자여야 합니다.
 
 ### `includeIf`를 다시 구현하지 않는 이유
 
@@ -83,8 +85,9 @@ Git 동작을 지원한다고 주장하지 않습니다.
    context를 확인하기 위해 Git은 여전히 실행될 수 있습니다.
 5. 그렇지 않으면 Git에서 최종 `github.account`를 읽습니다. 이 key가 없으면
    최종 `user.name`을 읽습니다.
-6. 유효한 `user.name` 후보는 인증된 GitHub CLI profile과 비교합니다. 일치하는
-   profile이 없으면 account 오류가 아니라 stock 경로를 사용합니다.
+6. 유효한 `user.name` 후보는 `github.com`용으로 저장된 GitHub CLI profile 이름과
+   비교합니다. 일치하는 profile이 없으면 account 오류가 아니라 stock 경로를
+   사용합니다. 이 metadata 조회는 credential을 검증하지 않습니다.
 7. 명시 account 또는 일치한 implicit `user.name` account가 있고 target이
    충돌 없는 `github.com`이면 실제 `gh auth token --hostname github.com
    --user ACCOUNT`를 실행합니다.

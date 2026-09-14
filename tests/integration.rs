@@ -64,6 +64,7 @@ impl Fixture {
             .env("GIT_CONFIG_GLOBAL", &self.global)
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("FAKE_GH_LOG", log)
+            .env("FAKE_GH_AUTH_LOG", self.root.join("fake-gh-auth.log"))
             .env("GH_AUTO_SWITCHER_REAL_GH", &self.fake_gh);
         let mut paths = vec![self.bin.clone()];
         paths.extend(env::split_paths(&path));
@@ -96,6 +97,7 @@ impl Fixture {
             .env("GIT_CONFIG_GLOBAL", &self.global)
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("FAKE_GH_LOG", &self.log)
+            .env("FAKE_GH_AUTH_LOG", self.root.join("fake-gh-auth.log"))
             .env("GH_AUTO_SWITCHER_REAL_GH", &self.fake_gh)
             .env("PATH", path);
         process
@@ -103,6 +105,18 @@ impl Fixture {
 
     fn write_global(&self, content: &str) {
         fs::write(&self.global, content).expect("write global gitconfig");
+    }
+
+    fn write_hosts(&self, profiles: &[&str]) {
+        let config_dir = self.root.join("gh-config");
+        fs::create_dir_all(&config_dir).expect("create gh config directory");
+        let mut content = String::from("github.com:\n    users:\n");
+        for profile in profiles {
+            content.push_str("        ");
+            content.push_str(profile);
+            content.push_str(":\n");
+        }
+        fs::write(config_dir.join("hosts.yml"), content).expect("write gh hosts");
     }
 
     fn run_git(&self, repo: &Path, args: &[&str]) {
@@ -222,7 +236,10 @@ fn assert_account(fixture: &Fixture, repo: &Path, account: &str) {
 
 const FAKE_GH: &str = r##"#!/bin/sh
 if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
-    has_json=false
+if [ -n "${FAKE_GH_AUTH_LOG:-}" ]; then
+printf 'status\n' >> "$FAKE_GH_AUTH_LOG"
+fi
+has_json=false
     for arg in "$@"; do
         if [ "$arg" = "--json" ]; then
             has_json=true
@@ -244,6 +261,9 @@ if [ "$1" = "auth" ] && [ "$2" = "token" ]; then
         fi
         previous="$arg"
     done
+    if [ -n "${FAKE_GH_AUTH_LOG:-}" ]; then
+        printf 'token user=%s\n' "$user" >> "$FAKE_GH_AUTH_LOG"
+    fi
     if [ -n "${FAKE_GH_AUTH_STDOUT:-}" ]; then
         printf '%s' "$FAKE_GH_AUTH_STDOUT"
     fi
@@ -296,12 +316,12 @@ fn native_git_conditional_includes_select_the_account() {
 fn matching_user_name_selects_the_authenticated_github_profile() {
     let fixture = Fixture::new();
     fixture.write_global("[user]\nname = carter-hp\n");
+    fixture.write_hosts(&["carter-hp"]);
     let repo = fixture.repo("repository");
     let output = fixture
         .env_command(binary_path().to_str().expect("binary path"))
         .current_dir(&repo)
         .args(["exec", "--", "api", "user"])
-        .env("FAKE_GH_AUTH_STATUS_OUTPUT", "success")
         .output()
         .expect("run with matching user.name");
 
@@ -321,6 +341,7 @@ fn user_name_from_remote_include_selects_the_authenticated_profile() {
     fixture.write_global(
         "[user]\nname = beomjungil\n[includeIf \"hasconfig:remote.*.url:https://github.com/healingpaper-solution/**\"]\npath = work-user.inc\n",
     );
+    fixture.write_hosts(&["carter-hp"]);
     let repo = fixture.repo("repository");
     fixture.add_remote(
         &repo,
@@ -330,7 +351,6 @@ fn user_name_from_remote_include_selects_the_authenticated_profile() {
         .env_command(binary_path().to_str().expect("binary path"))
         .current_dir(&repo)
         .args(["exec", "--", "api", "user"])
-        .env("FAKE_GH_AUTH_STATUS_OUTPUT", "success")
         .output()
         .expect("run with remote-included user.name");
 
@@ -343,12 +363,12 @@ fn user_name_from_remote_include_selects_the_authenticated_profile() {
 fn user_name_profile_is_reported_as_the_selected_account() {
     let fixture = Fixture::new();
     fixture.write_global("[user]\nname = carter-hp\n");
+    fixture.write_hosts(&["carter-hp"]);
     let repo = fixture.repo("repository");
     let output = fixture
         .env_command(binary_path().to_str().expect("binary path"))
         .current_dir(&repo)
         .args(["auto-switcher", "status"])
-        .env("FAKE_GH_AUTH_STATUS_OUTPUT", "success")
         .output()
         .expect("run status with matching user.name");
 
@@ -365,12 +385,12 @@ fn user_name_profile_is_reported_as_the_selected_account() {
 fn doctor_checks_the_matching_user_name_profile() {
     let fixture = Fixture::new();
     fixture.write_global("[user]\nname = carter-hp\n");
+    fixture.write_hosts(&["carter-hp"]);
     let repo = fixture.repo("repository");
     let output = fixture
         .env_command(binary_path().to_str().expect("binary path"))
         .current_dir(&repo)
         .args(["auto-switcher", "doctor"])
-        .env("FAKE_GH_AUTH_STATUS_OUTPUT", "success")
         .output()
         .expect("run doctor with matching user.name");
 
@@ -393,6 +413,25 @@ fn unmatched_user_name_preserves_stock_gh_behavior() {
     assert!(output.status.success());
     let log = fs::read_to_string(&fixture.log).expect("read unmatched profile log");
     assert!(log.contains("token=<>"), "{log}");
+}
+
+#[test]
+fn stored_profile_changes_are_re_evaluated_between_commands() {
+    let fixture = Fixture::new();
+    fixture.write_global("[user]\nname = carter-hp\n");
+    fixture.write_hosts(&["carter-hp"]);
+    let repo = fixture.repo("repository");
+
+    let first = fixture.run_router(&repo, &["exec", "--", "api", "user"]);
+    assert!(first.status.success());
+    let first_log = fs::read_to_string(&fixture.log).expect("read first profile log");
+    assert!(first_log.contains("token=<token-carter-hp>"), "{first_log}");
+
+    fixture.write_hosts(&["beomjungil"]);
+    let second = fixture.run_router(&repo, &["exec", "--", "api", "user"]);
+    assert!(second.status.success());
+    let second_log = fs::read_to_string(&fixture.log).expect("read second profile log");
+    assert!(second_log.contains("token=<>"), "{second_log}");
 }
 
 #[test]
@@ -438,9 +477,10 @@ fn process_account_override_takes_precedence_over_user_name() {
 }
 
 #[test]
-fn missing_implicit_profile_does_not_hide_auth_status_failures() {
+fn implicit_profile_selection_reads_hosts_without_running_auth_status() {
     let fixture = Fixture::new();
     fixture.write_global("[user]\nname = carter-hp\n");
+    fixture.write_hosts(&["carter-hp"]);
     let repo = fixture.repo("repository");
     let output = fixture
         .env_command(binary_path().to_str().expect("binary path"))
@@ -448,14 +488,51 @@ fn missing_implicit_profile_does_not_hide_auth_status_failures() {
         .args(["exec", "--", "api", "user"])
         .env("FAKE_GH_AUTH_STATUS_EXIT", "7")
         .output()
-        .expect("run with failed auth status");
+        .expect("run with stored auth profile");
+
+    assert!(output.status.success());
+    let log = fs::read_to_string(&fixture.log).expect("read stored profile log");
+    assert!(log.contains("token=<token-carter-hp>"), "{log}");
+    let auth_log =
+        fs::read_to_string(fixture.root.join("fake-gh-auth.log")).expect("read auth command log");
+    assert!(!auth_log.contains("status"), "{auth_log}");
+    assert_eq!(
+        auth_log.matches("token user=carter-hp").count(),
+        1,
+        "{auth_log}"
+    );
+}
+
+#[test]
+fn malformed_hosts_file_fails_without_running_gh_auth_commands() {
+    let fixture = Fixture::new();
+    fixture.write_global("[user]\nname = carter-hp\n");
+    let config_dir = fixture.root.join("gh-config");
+    fs::create_dir_all(&config_dir).expect("create gh config directory");
+    fs::write(config_dir.join("hosts.yml"), "github.com: [").expect("write malformed hosts");
+    let repo = fixture.repo("repository");
+    let output = fixture.run_router(&repo, &["exec", "--", "api", "user"]);
 
     assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("failed to inspect GitHub authentication profiles"),
-        "{stderr}"
-    );
+    assert!(String::from_utf8_lossy(&output.stderr)
+        .contains("failed to parse GitHub authentication profiles"));
+    assert!(!fixture.root.join("fake-gh-auth.log").exists());
+    assert!(!fixture.log.exists());
+}
+
+#[test]
+fn unreadable_hosts_file_fails_without_running_gh_auth_commands() {
+    let fixture = Fixture::new();
+    fixture.write_global("[user]\nname = carter-hp\n");
+    let config_dir = fixture.root.join("gh-config");
+    fs::create_dir_all(config_dir.join("hosts.yml")).expect("create hosts directory");
+    let repo = fixture.repo("repository");
+    let output = fixture.run_router(&repo, &["exec", "--", "api", "user"]);
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr)
+        .contains("failed to read GitHub authentication profiles"));
+    assert!(!fixture.root.join("fake-gh-auth.log").exists());
     assert!(!fixture.log.exists());
 }
 
@@ -463,12 +540,12 @@ fn missing_implicit_profile_does_not_hide_auth_status_failures() {
 fn authenticated_implicit_profile_with_unavailable_token_fails_clearly() {
     let fixture = Fixture::new();
     fixture.write_global("[user]\nname = carter-hp\n");
+    fixture.write_hosts(&["carter-hp"]);
     let repo = fixture.repo("repository");
     let output = fixture
         .env_command(binary_path().to_str().expect("binary path"))
         .current_dir(&repo)
         .args(["exec", "--", "api", "user"])
-        .env("FAKE_GH_AUTH_STATUS_OUTPUT", "failed")
         .env("FAKE_GH_AUTH_EXIT", "7")
         .output()
         .expect("run with unavailable implicit profile token");
@@ -478,6 +555,14 @@ fn authenticated_implicit_profile_with_unavailable_token_fails_clearly() {
     assert!(
         stderr.contains("no GitHub authentication found for account"),
         "{stderr}"
+    );
+    let auth_log =
+        fs::read_to_string(fixture.root.join("fake-gh-auth.log")).expect("read auth command log");
+    assert!(!auth_log.contains("status"), "{auth_log}");
+    assert_eq!(
+        auth_log.matches("token user=carter-hp").count(),
+        1,
+        "{auth_log}"
     );
 }
 
@@ -700,9 +785,37 @@ fn help_payload_is_forwarded_to_real_gh() {
     assert!(log.contains("arg=<--help>"), "{log}");
     assert!(log.contains("token=<token-carter-hp>"), "{log}");
 
+    let output = fixture.run_router(
+        &repo,
+        &["exec", "--", "pr", "create", "--body", "--version"],
+    );
+    assert!(output.status.success());
+    let log = fs::read_to_string(&fixture.log).expect("read version payload log");
+    assert!(log.contains("arg=<--version>"), "{log}");
+    assert!(log.contains("token=<token-carter-hp>"), "{log}");
+
     let output = fixture.run_router(&repo, &["exec", "--", "--help"]);
     assert!(output.status.success());
     let log = fs::read_to_string(&fixture.log).expect("read help command log");
+    assert!(log.contains("token=<>"), "{log}");
+}
+
+#[test]
+fn version_flag_bypasses_account_routing() {
+    let fixture = Fixture::new();
+    fixture.write_global("[github]\naccount = carter-hp\n");
+    let repo = fixture.repo("repository");
+    let output = fixture
+        .env_command(binary_path().to_str().expect("binary path"))
+        .current_dir(&repo)
+        .args(["exec", "--", "--version"])
+        .env("FAKE_GH_AUTH_EXIT", "7")
+        .output()
+        .expect("run version flag");
+
+    assert!(output.status.success());
+    let log = fs::read_to_string(&fixture.log).expect("read version log");
+    assert!(log.contains("arg=<--version>"), "{log}");
     assert!(log.contains("token=<>"), "{log}");
 }
 
