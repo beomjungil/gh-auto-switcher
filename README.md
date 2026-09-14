@@ -13,11 +13,15 @@ launcher gives the real `gh` process only that account's token.
 Requirements:
 
 - GitHub CLI (`gh`);
+- Git;
 - one or more authenticated GitHub accounts;
 - Bash, Zsh, or Fish if you want normal `gh ...` commands to switch accounts
   transparently.
 
-Install the prebuilt extension:
+Choose one launcher installation method. The account, Git configuration, and
+shell-hook steps below are common to both methods.
+
+### Option A: prebuilt GitHub CLI extension (recommended)
 
 ```sh
 gh extension install beomjungil/gh-auto-switcher
@@ -27,27 +31,38 @@ gh auto-switcher help
 The current release includes Linux amd64, macOS amd64, and macOS arm64
 binaries. GitHub CLI selects the matching binary for your platform.
 
+### Option B: standalone source executable
+
+Use this when you want `gh-auto-switcher` directly on `PATH`. This method
+requires Cargo/Rust:
+
+```sh
+cd /path/to/gh-auto-switcher
+cargo install --path .
+gh-auto-switcher help
+```
+
 ## Authenticate the accounts
 
 Authenticate every GitHub account you want to use with the normal GitHub CLI
 commands. GitHub CLI keeps these profiles; this extension does not modify them.
+Repeat the login flow for each account you want to select:
 
 ```sh
 gh auth login --hostname github.com
 gh auth status --hostname github.com
 ```
 
-Run the login flow again when adding another account. Confirm that the logins
-are the GitHub usernames you expect:
+Confirm that the stored logins are the GitHub usernames you expect:
 
 ```sh
 gh auth status --hostname github.com
 ```
 
-## How an account is selected
+## Configure account selection
 
 For each command, the launcher reads Git's effective configuration in the
-current working directory. The first applicable rule wins:
+current working directory. The first applicable account rule wins:
 
 1. `GH_AUTO_SWITCHER_ACCOUNT` selects an account for one process;
 2. `github.account` explicitly selects an account;
@@ -55,44 +70,81 @@ current working directory. The first applicable rule wins:
    same authenticated `gh` profile exists;
 4. if no matching profile exists, the real `gh` runs unchanged.
 
-`github.account` is optional. Use it when your Git commit identity is not the
-same as your GitHub login.
+Replace example values such as `personal-github-username` and
+`work-github-username` with the actual GitHub login names from `gh auth status`.
 
-For example, this needs no extra setting when the Git identity is also the
-GitHub username:
+When the effective `user.name` is already the GitHub username of an
+authenticated profile, no `github.account` setting is needed:
 
 ```ini
 [user]
-    name = beomjungil
+    name = personal-github-username
 ```
 
-If the displayed Git identity differs from the GitHub username, add the
-explicit account key:
+This also works with conditional Git identities, so different repositories can
+select different authenticated profiles without any `github.account` setting:
+
+```ini
+# ~/.gitconfig
+[user]
+    name = personal-github-username
+
+[includeIf "hasconfig:remote.*.url:https://github.com/customer/**"]
+    path = ~/.gitconfig-customer
+```
+
+```ini
+# ~/.gitconfig-customer
+[user]
+    name = work-github-username
+```
+
+When the Git commit identity is a display name or otherwise differs from the
+GitHub login, use an explicit `github.account` mapping. Prefer the narrowest
+scope that matches the repositories that need it.
+
+For one repository, use local configuration:
+
+```sh
+cd /path/to/customer-repository
+git config --local github.account work-github-username
+```
+
+For a group of repositories, use a conditional include:
+
+```ini
+# ~/.gitconfig
+[includeIf "hasconfig:remote.*.url:https://github.com/customer/**"]
+    path = ~/.gitconfig-customer
+```
+
+```ini
+# ~/.gitconfig-customer
+[github]
+    account = work-github-username
+```
+
+Use a global setting only when the same account should be the explicit default
+for every repository:
+
+```sh
+git config --global github.account personal-github-username
+```
+
+`github.account` is explicit and takes precedence over `user.name`. Therefore,
+do not set it globally if different repositories should select accounts from
+their different `user.name` values. Local or conditional `github.account`
+settings can provide narrower overrides when needed.
+
+If the displayed Git identity should still be used for commits, keep `user.name`
+and set only the account mapping:
 
 ```ini
 [user]
     name = Beom Jungil
 
 [github]
-    account = beomjungil
-```
-
-Git evaluates local, global, and `includeIf` configuration normally. This also
-works for repository-specific account selection:
-
-```ini
-# ~/.gitconfig
-[user]
-    name = beomjungil
-
-[includeIf "hasconfig:remote.*.url:https://github.com/healingpaper-solution/**"]
-    path = ~/.gitconfig-healingpaper
-```
-
-```ini
-# ~/.gitconfig-healingpaper
-[user]
-    name = carter-hp
+    account = personal-github-username
 ```
 
 Check the effective values and their origins with:
@@ -111,16 +163,20 @@ behavior is preserved. An explicit `github.account` or
 `GH_AUTO_SWITCHER_ACCOUNT` that cannot be authenticated fails clearly instead
 of silently falling back.
 
-## Choose how to run commands
+## Enable transparent `gh` commands
 
-### Option A: transparent normal `gh` commands
+Use a shell hook when you want ordinary commands such as `gh pr list` to select
+an account based on the current repository. The GitHub CLI extension cannot
+replace the `gh` executable by itself. `gh extension install` also does not
+modify your shell startup file.
 
-Use this when you want commands such as `gh pr list` to select an account
-based on the current repository. A shell hook is required because the GitHub
-CLI extension itself cannot replace the `gh` executable.
+Install the launcher first, then add exactly one hook command for that
+installation to `~/.bashrc`, `~/.zshrc`, or Fish's
+`~/.config/fish/config.fish`. After adding it to a startup file, open a new
+shell; to activate it immediately, evaluate or source the same command in the
+current shell.
 
-The hook does not edit your shell startup file. Add the command for your shell
-to your startup file, or evaluate it only in the current shell.
+### GitHub CLI extension
 
 Bash:
 
@@ -140,7 +196,28 @@ Fish:
 source (gh auto-switcher shell-hook fish | psub)
 ```
 
-After the hook is active, use ordinary commands:
+### Standalone executable
+
+Bash:
+
+```sh
+eval "$(gh-auto-switcher shell-hook bash)"
+```
+
+Zsh:
+
+```sh
+eval "$(gh-auto-switcher shell-hook zsh)"
+```
+
+Fish:
+
+```fish
+source (gh-auto-switcher shell-hook fish | psub)
+```
+
+Use only the commands matching your installation. After the hook is active,
+ordinary commands go through the launcher:
 
 ```sh
 gh auto-switcher status
@@ -153,7 +230,7 @@ gh api repos/OWNER/REPOSITORY
 The hook is only a thin function. It does not change directories, export a
 token in the parent shell, or change GitHub CLI's active account.
 
-### Option B: explicit launcher commands without a shell hook
+## Run commands without a shell hook
 
 A shell hook is not needed when you call the launcher explicitly:
 
@@ -166,6 +243,7 @@ For a standalone binary installed on `PATH`, use:
 
 ```sh
 gh-auto-switcher exec -- pr list
+gh-auto-switcher exec -- api repos/OWNER/REPOSITORY
 ```
 
 Without the hook or an explicit `exec` call, a normal `gh pr list` is just the
@@ -181,17 +259,25 @@ GH_AUTO_SWITCHER_ACCOUNT=carter-hp gh auto-switcher exec -- pr list
 ## Inspect the selected route
 
 `status` shows the account source, target host, and credential mode without
-printing a token:
+printing a token. Use the command matching your installation:
 
 ```sh
+# GitHub CLI extension
 gh auto-switcher status
+
+# Standalone executable
+gh-auto-switcher status
 ```
 
 `doctor` verifies that the selected account can provide a token through the
 normal GitHub CLI credential store. It does not make an API request:
 
 ```sh
+# GitHub CLI extension
 gh auto-switcher doctor
+
+# Standalone executable
+gh-auto-switcher doctor
 ```
 
 ## What the launcher changes
