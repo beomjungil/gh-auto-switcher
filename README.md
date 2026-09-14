@@ -67,8 +67,12 @@ current working directory. The first applicable account rule wins:
 1. `GH_AUTO_SWITCHER_ACCOUNT` selects an account for one process;
 2. `github.account` explicitly selects an account;
 3. `user.name` selects an account when it is a valid GitHub username and the
-   same authenticated `gh` profile exists;
+   same stored GitHub CLI profile name exists;
 4. if no matching profile exists, the real `gh` runs unchanged.
+
+The profile-name check reads GitHub CLI's `hosts.yml`; it does not run
+`gh auth status` or validate a token. Token availability is checked only when
+a routed command needs the selected account.
 
 Replace example values such as `personal-github-username` and
 `work-github-username` with the actual GitHub login names from `gh auth status`.

@@ -65,8 +65,13 @@ launcher는 각 명령마다 현재 working directory에서 Git의 최종 설정
 
 1. `GH_AUTO_SWITCHER_ACCOUNT`: 하나의 process에서 사용할 계정
 2. `github.account`: 명시적으로 지정한 계정 login
-3. `user.name`: 유효한 GitHub username이고 동일한 `gh` 인증 profile이 있을 때
+3. `user.name`: 유효한 GitHub username이고 GitHub CLI에 저장된 동일한 profile
+   이름이 있을 때
 4. 일치하는 profile이 없으면 실제 `gh`를 변경 없이 실행
+
+profile 이름 확인은 GitHub CLI의 `hosts.yml`을 읽으며 `gh auth status`를
+실행하거나 token을 검증하지 않습니다. token 사용 가능 여부는 실제 routing
+명령이 선택한 계정을 필요로 할 때만 확인합니다.
 
 `personal-github-username`, `work-github-username` 같은 예시 값은
 `gh auth status`에 표시되는 실제 GitHub login으로 바꿔 사용하세요.

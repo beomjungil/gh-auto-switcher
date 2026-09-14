@@ -63,8 +63,7 @@ fn run_management(args: &[OsString]) -> Result<(), String> {
 fn status() -> Result<(), String> {
     let cwd = env::current_dir()
         .map_err(|error| format!("failed to resolve current directory: {error}"))?;
-    let real_gh = runner::find_real_gh()?;
-    let routing = runner::resolve_routing(&cwd, &[], &real_gh)?;
+    let routing = runner::resolve_routing(&cwd, &[])?;
 
     println!("working-directory: {}", cwd.display());
     match &routing.account {
@@ -122,7 +121,7 @@ fn doctor() -> Result<(), String> {
     let cwd = env::current_dir()
         .map_err(|error| format!("failed to resolve current directory: {error}"))?;
     let real_gh = runner::find_real_gh()?;
-    let routing = runner::resolve_routing(&cwd, &[], &real_gh)?;
+    let routing = runner::resolve_routing(&cwd, &[])?;
 
     match routing.credential_mode {
         runner::CredentialMode::Stock => {

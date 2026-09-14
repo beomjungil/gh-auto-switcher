@@ -62,9 +62,11 @@ applies:
 
 The launcher gives special meaning to an explicit `github.account` value. When
 that key is absent, a valid `user.name` is considered as an account candidate
-only if the same authenticated GitHub CLI profile exists. `user.email` is never
-used. Explicit account values must match 1–39 ASCII letters, numbers, or
-hyphens so they can safely be passed to `gh auth token --user`.
+only if the same GitHub CLI profile name is stored for `github.com` in its
+configuration. Profile-name lookup reads `hosts.yml`; it does not run
+`gh auth status` or validate a token. `user.email` is never used. Explicit
+account values must match 1–39 ASCII letters, numbers, or hyphens so they can
+safely be passed to `gh auth token --user`.
 
 ### Why this is safer than reimplementing `includeIf`
 
@@ -87,9 +89,9 @@ For an ordinary command, the launcher follows this path:
    validation errors; Git may still be invoked to establish the routing context.
 5. Otherwise, it reads the effective `github.account` value from Git. If that
    key is absent, it reads the effective `user.name` value.
-6. A valid `user.name` candidate is checked against the authenticated GitHub CLI
-   profiles. No matching profile means the stock path; it is not an account
-   error.
+6. A valid `user.name` candidate is checked against the stored GitHub CLI profile
+   names for `github.com`. No matching profile means the stock path; it is not an
+   account error. This metadata lookup does not validate credentials.
 7. For an explicit account, or a matching implicit `user.name` account, on an
    unambiguous `github.com` target, it runs the real `gh auth token
    --hostname github.com --user ACCOUNT`.

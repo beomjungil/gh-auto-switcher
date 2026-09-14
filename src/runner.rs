@@ -19,14 +19,10 @@ pub struct RoutingResolution {
     pub credential_mode: CredentialMode,
 }
 
-pub fn resolve_routing(
-    cwd: &Path,
-    args: &[OsString],
-    real_gh: &Path,
-) -> Result<RoutingResolution, String> {
+pub fn resolve_routing(cwd: &Path, args: &[OsString]) -> Result<RoutingResolution, String> {
     let has_caller_token = has_any_caller_token();
     let account = match gitconfig::resolve_account(cwd) {
-        Ok(account) if !has_caller_token => Ok(resolve_user_name_account(real_gh, account)?),
+        Ok(account) if !has_caller_token => Ok(resolve_user_name_account(account)?),
         Ok(account) => Ok(account),
         Err(error) => Err(error),
     };
@@ -52,7 +48,7 @@ pub fn resolve_routing(
     }
 
     let account = if has_caller_token {
-        resolve_user_name_account(real_gh, account?)?
+        resolve_user_name_account(account?)?
     } else {
         account?
     };
@@ -83,14 +79,13 @@ pub fn resolve_routing(
 }
 
 fn resolve_user_name_account(
-    real_gh: &Path,
     account: gitconfig::AccountSelection,
 ) -> Result<gitconfig::AccountSelection, String> {
     let gitconfig::AccountSelection::UserName(account) = account else {
         return Ok(account);
     };
 
-    if auth::profile_exists(real_gh, &account.username)? {
+    if auth::profile_exists(&account.username)? {
         Ok(gitconfig::AccountSelection::UserName(account))
     } else {
         Ok(gitconfig::AccountSelection::Stock)
@@ -104,7 +99,7 @@ pub fn execute(args: &[OsString]) -> Result<(), String> {
         return exec_real_gh(&real_gh, args, None);
     }
 
-    let routing = resolve_routing(Path::new("."), args, &real_gh)?;
+    let routing = resolve_routing(Path::new("."), args)?;
     match routing.credential_mode {
         CredentialMode::ExplicitEnvironment | CredentialMode::Stock => {
             exec_real_gh(&real_gh, args, None)
@@ -184,7 +179,8 @@ fn is_auth_command(args: &[OsString]) -> bool {
 
 fn is_no_auth_command(args: &[OsString]) -> bool {
     let Some(command_index) = first_command_index(args) else {
-        return args.len() == 1 && args[0] == OsStr::new("--help");
+        return args.len() == 1
+            && (args[0] == OsStr::new("--help") || args[0] == OsStr::new("--version"));
     };
     let command = &args[command_index];
     command == OsStr::new("help")
