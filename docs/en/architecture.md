@@ -24,7 +24,7 @@ flowchart TD
     launcher --> target["Target resolver"]
     target --> signals["Git remotes and recognized command arguments"]
     launcher --> config["Git config resolver"]
-    config --> account["git config github.account"]
+    config --> account["github.account or user.name"]
     launcher --> lookup["Token lookup"]
     lookup --> auth["real gh auth token --user ACCOUNT"]
     launcher --> realgh["real gh"]
@@ -45,6 +45,8 @@ working directory:
 ```sh
 git config --get --null github.account
 git config --show-origin --get --null github.account
+git config --get --null user.name
+git config --show-origin --get --null user.name
 git config --get-regexp '^remote\\..*\\.url$'
 ```
 
@@ -58,10 +60,11 @@ applies:
 - branch and remote state;
 - `GIT_CONFIG_*` command-scope configuration.
 
-The launcher only gives special meaning to the final `github.account` value.
-It does not treat `user.name` or `user.email` as a GitHub login. An account must
-match 1–39 ASCII letters, numbers, or hyphens so it can safely be passed to
-`gh auth token --user`.
+The launcher gives special meaning to an explicit `github.account` value. When
+that key is absent, a valid `user.name` is considered as an account candidate
+only if the same authenticated GitHub CLI profile exists. `user.email` is never
+used. Explicit account values must match 1–39 ASCII letters, numbers, or
+hyphens so they can safely be passed to `gh auth token --user`.
 
 ### Why this is safer than reimplementing `includeIf`
 
@@ -82,18 +85,25 @@ For an ordinary command, the launcher follows this path:
 4. If one applies, it leaves the caller environment intact and does not
    retrieve a configured account's token. This takes precedence over account
    validation errors; Git may still be invoked to establish the routing context.
-5. Otherwise, it reads the effective `github.account` value from Git.
-6. For a configured account on an unambiguous `github.com` target, it runs the
-   real `gh auth token --hostname github.com --user ACCOUNT`.
-7. It captures the token privately, removes caller token variables during that
+5. Otherwise, it reads the effective `github.account` value from Git. If that
+   key is absent, it reads the effective `user.name` value.
+6. A valid `user.name` candidate is checked against the authenticated GitHub CLI
+   profiles. No matching profile means the stock path; it is not an account
+   error.
+7. For an explicit account, or a matching implicit `user.name` account, on an
+   unambiguous `github.com` target, it runs the real `gh auth token
+   --hostname github.com --user ACCOUNT`.
+8. It captures the token privately, removes caller token variables during that
    lookup, and supplies the result only to the child `gh` as `GH_TOKEN`.
-8. It never calls `gh auth switch`, changes `hosts.yml`, stores the token, or
+9. It never calls `gh auth switch`, changes `hosts.yml`, stores the token, or
    prints the token.
 
-A missing account with no caller token is a deliberate stock path. The launcher
-can skip host resolution in that case and invokes the real `gh` unchanged. A
-configured but unauthenticated account is different: token lookup fails and
-there is no fallback to another stored account.
+A missing or unmatched `user.name` with no caller token is a deliberate stock
+path. The launcher can skip host resolution in that case and invokes the real
+`gh` unchanged. An explicit account that cannot provide a token is different:
+token lookup fails and there is no fallback to another stored account. A
+matching implicit profile that exists but cannot provide its token also fails
+clearly rather than switching accounts.
 
 Authentication-management and other control-plane commands (`auth`, `help`,
 `version`, `completion`, `config`, and `alias`) bypass account injection and go
@@ -153,8 +163,10 @@ script that has not sourced the hook, or another shell function that calls
 
 The implementation prefers a clear failure to a guessed account or host:
 
-- invalid or empty `github.account` values fail;
-- an account with no stored token fails without fallback;
+- invalid or empty explicit `github.account` values fail;
+- an explicit account with no stored token fails without fallback;
+- a valid `user.name` without a matching profile preserves stock `gh`;
+- a matching implicit profile that cannot provide a token fails without fallback;
 - conflicting host signals fail before token injection;
 - automatic routing for unsupported Enterprise hosts fails unless an applicable
   explicit caller token is already present;
@@ -169,7 +181,7 @@ be represented by the recognized signals.
 
 ## Verified behavior
 
-The current suite contains 5 unit tests and 34 integration tests. Integration
+The current suite contains 5 unit tests and 44 integration tests. Integration
 tests use the real local Git executable, isolated temporary Git configuration,
 fake `gh` executables, and actual Bash, Zsh, and Fish processes. They cover:
 
@@ -177,7 +189,8 @@ fake `gh` executables, and actual Bash, Zsh, and Fish processes. They cover:
   `hasconfig:remote.*.url`);
 - nested includes, local/global/command-scope precedence, linked worktrees,
   branch and remote changes without `cd`, and inherited `GIT_CONFIG_*` values;
-- missing, invalid, and malformed account configuration;
+- explicit and implicit account selection, matching GitHub CLI profiles,
+  invalid display names, missing profiles, and malformed explicit configuration;
 - explicit token precedence, token isolation, host conflicts, unsupported hosts,
   and target-parser payload boundaries;
 - argument quoting and non-UTF-8 arguments, stdin, exit status, signals,

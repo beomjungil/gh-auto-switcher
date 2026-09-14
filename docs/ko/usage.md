@@ -214,70 +214,104 @@ functions --erase gh
 다른 도구가 먼저 설치한 `gh` function이 있었다면 무조건 지우지 말고 원래
 function을 저장하거나 복원하세요.
 
-## 4. account convention 설정
+## 4. account 선택 설정
 
-launcher는 Git 자체를 통해 현재 context의 최종 `github.account` 값을 읽습니다.
+launcher는 현재 working directory에서 Git의 최종 설정을 읽습니다. 선택 순서는
+다음과 같습니다.
+
+1. `GH_AUTO_SWITCHER_ACCOUNT`: 하나의 process에서 사용할 account
+2. `github.account`: 명시적으로 지정한 account login
+3. `user.name`: 유효한 GitHub login이고 동일한 `gh` 인증 profile이 있을 때
+4. 일치하는 profile이 없으면 stock `gh`
+
+현재 값과 출처를 확인합니다.
 
 ```sh
+git config --get user.name
 git config --get github.account
+git config --show-origin --get user.name
+git config --show-origin --get github.account
 ```
 
-global 기본 account를 설정합니다.
+`user.name`이 로그인된 GitHub username과 같으면 추가 설정이 필요하지 않습니다.
 
-```sh
-git config --global github.account personal-github-username
+```ini
+[user]
+    name = beomjungil
 ```
 
-또는 하나의 repository에만 설정합니다.
+Git identity가 표시 이름 등으로 GitHub login과 다르면 `github.account`를
+추가합니다.
 
-```sh
-cd ~/src/customer-repository
-git config --local github.account work-github-username
+```ini
+[user]
+    name = Beom Jungil
+
+[github]
+    account = beomjungil
 ```
 
-값은 ASCII 문자·숫자·하이픈으로 이루어진 1–39자여야 합니다. 빈 값, slash,
-공백 등 잘못된 값은 fallback account를 선택하지 않고 실패합니다.
+명시적인 account 값은 ASCII 문자·숫자·하이픈으로 이루어진 1–39자여야
+합니다. 잘못된 명시 설정이나 해당 account의 token이 없으면 다른 account로
+fallback하지 않고 실패합니다. 반면 `github.account`가 없는 `user.name`은
+유효한 login이 아니거나 일치하는 profile이 없을 때 stock `gh`를 사용합니다.
 
 ### conditional include
 
 Git이 설정을 평가합니다. launcher가 Git의 condition 문법을 다시 구현하지
 않으므로 일반적인 include와 우선순위 동작이 유지됩니다.
 
-repository 경로 조건으로 기본 account를 바꿀 수 있습니다.
+예를 들어 remote URL에 따라 Git identity와 matching GitHub profile을 바꿀 수
+있습니다.
 
 ```ini
 # ~/.gitconfig
-[github]
-    account = personal-github-username
+[user]
+    name = personal-github-username
 
-[includeIf "gitdir:~/src/customer/**"]
+[includeIf "hasconfig:remote.*.url:https://github.com/customer/**"]
     path = ~/.gitconfig-customer
 ```
 
 ```ini
 # ~/.gitconfig-customer
-[github]
-    account = work-github-username
-```
-
-company organization의 remote URL 조건으로 account를 선택할 수도 있습니다.
-
-```ini
-[includeIf "hasconfig:remote.*.url:https://github.com/customer/**"]
-    path = ~/.gitconfig-customer
+[user]
+    name = work-github-username
 ```
 
 설치된 Git 버전이 지원하는 `gitdir`, `gitdir/i`, `onbranch`, 중첩 include,
 linked worktree, local/global 우선순위도 Git이 직접 평가합니다. integration
 suite는 실제 Git으로 이 패턴들을 검증합니다.
 
-`user.name`이나 `user.email`을 account 설정으로 사용하지 마세요. 이 값으로
-GitHub login을 추론하지 않습니다.
-
 ## 5. 일반 명령 실행
 
-hook이 활성화되어 있고 `github.account`가 유효한 account로 해석되면 평소처럼
-명령을 실행합니다.
+launcher를 사용하는 방법은 두 가지입니다.
+
+### 일반 `gh` 명령을 투명하게 사용
+
+`gh pr list`처럼 평소 명령을 자동 전환하려면 shell hook이 필요합니다.
+GitHub CLI extension만으로는 `gh` 실행 파일을 대체할 수 없습니다. hook은
+shell startup 파일을 자동으로 수정하지 않습니다.
+
+Bash:
+
+```sh
+eval "$(gh auto-switcher shell-hook bash)"
+```
+
+Zsh:
+
+```sh
+eval "$(gh auto-switcher shell-hook zsh)"
+```
+
+Fish:
+
+```fish
+source (gh auto-switcher shell-hook fish | psub)
+```
+
+hook이 활성화되면 다음처럼 사용합니다.
 
 ```sh
 gh pr list
@@ -286,15 +320,29 @@ gh issue list --limit 10
 gh repo view OWNER/REPOSITORY
 ```
 
-실행할 때마다 현재 working context의 Git 설정을 다시 평가합니다. `cd` hook이
-없어도 다음 명령에서 branch나 remote 변경이 반영됩니다.
+실행할 때마다 현재 working context의 Git 설정을 다시 평가합니다. hook이
+없으면 일반 `gh`는 stock GitHub CLI이며 launcher가 개입하지 않습니다.
 
-repository 밖에서 실행하거나 다른 repository를 대상으로 할 때는 해당
-프로세스에 account를 명시합니다.
+### shell hook 없이 launcher 직접 호출
+
+launcher를 직접 호출하면 shell hook이 필요하지 않습니다.
 
 ```sh
-GH_AUTO_SWITCHER_ACCOUNT=work-github-username gh repo clone customer/example
-GH_AUTO_SWITCHER_ACCOUNT=personal-github-username gh --repo personal-github-username/example pr list
+gh auto-switcher exec -- pr list
+gh auto-switcher exec -- api repos/OWNER/REPOSITORY
+```
+
+standalone binary를 `PATH`에 설치했다면 다음처럼 실행합니다.
+
+```sh
+gh-auto-switcher exec -- pr list
+```
+
+repository 밖에서 실행하거나 일회성으로 account를 지정할 때는 process
+override를 사용합니다.
+
+```sh
+GH_AUTO_SWITCHER_ACCOUNT=carter-hp gh auto-switcher exec -- pr list
 ```
 
 이 override는 환경 변수이므로 launcher나 Git 설정에 저장되지 않습니다.
@@ -328,8 +376,9 @@ mode을 보여줍니다. token은 출력하지 않습니다.
 
 | 입력 | 의미 |
 | --- | --- |
-| `github.account` | 저장된 account login으로 사용하는 Git 최종 설정 key |
-| `GH_AUTO_SWITCHER_ACCOUNT` | 프로세스별 account override |
+| `github.account` | 선택 사항인 Git 최종 설정 key. 지정하면 저장된 account login을 명시적으로 선택 |
+| `user.name` | `github.account`가 없을 때 matching `gh` profile이 있으면 사용하는 Git identity |
+| `GH_AUTO_SWITCHER_ACCOUNT` | 가장 높은 우선순위의 프로세스별 account override |
 | `GH_AUTO_SWITCHER_REAL_GH` | 실제 `gh` 실행 파일의 명시적 경로 |
 | `GH_TOKEN`, `GITHUB_TOKEN` | `github.com` 및 `*.ghe.com`용 명시적 token family. 덮어쓰지 않음 |
 | `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN` | 그 밖의 Enterprise host용 명시적 token family. 덮어쓰지 않음 |
@@ -353,12 +402,14 @@ target host는 인식된 `--hostname`, `GH_HOST`, host-qualified `GH_REPO`/`-R`,
    `github.com` 및 `*.ghe.com`은 `GH_TOKEN`/`GITHUB_TOKEN`, 그 밖의 Enterprise
    host는 Enterprise 변수를 사용합니다. 이 token은 account validation error보다
    우선합니다.
-4. 적용 가능한 명시적 token이 없으면 유효한 configured account를 충돌 없는
-   `github.com` target에만 사용합니다.
-5. account 설정도 caller token도 없으면 stock `gh` 동작을 유지합니다. 이
+4. 적용 가능한 명시적 token이 없으면 `github.account`가 있을 때 그 account를
+   사용합니다. 없으면 유효한 `user.name`과 일치하는 인증 profile이 있을 때만
+   해당 account를 충돌 없는 `github.com` target에 사용합니다.
+5. 일치하는 `user.name` profile이 없으면 stock `gh` 동작을 유지합니다. 이
    경우 launcher는 target을 임의로 만들지 않고 host 확인을 생략할 수 있습니다.
-6. 설정된 account에서 token을 얻지 못하면 명확히 실패하며 다른 저장 account로
-   fallback하지 않습니다.
+6. 명시한 account에서 token을 얻지 못하면 명확히 실패하며 다른 저장 account로
+   fallback하지 않습니다. `user.name` profile이 없는 경우만 의도적으로 stock
+   `gh`로 처리합니다.
 
 지원되지 않는 Enterprise target 하나는 해당 host에 적용되는 explicit token이
 이미 있을 때만 그대로 통과합니다. 자동 account routing은 거부됩니다.
@@ -377,30 +428,39 @@ gh auto-switcher status
 git config --show-origin --get github.account
 ```
 
-`type -a gh`에 function이 없으면 shell hook을 다시 source하세요.
-`github.account`가 없으면 stock `gh` 동작이 정상입니다.
+`type -a gh`에 function이 없으면 shell hook을 다시 source하세요. 명시적인
+`gh auto-switcher exec -- ...` 호출에는 shell hook이 필요하지 않습니다.
+`github.account`가 없고 일치하는 `user.name` profile도 없으면 stock `gh` 동작이
+정상입니다.
 
 ### `github.account is empty` 또는 `invalid GitHub account`
 
-최종 설정을 수정하거나 제거합니다. 일반 Git 결과와 origin을 확인합니다.
+최종 명시 설정을 수정하거나 제거합니다. 일반 Git 결과와 origin을 확인합니다.
 
 ```sh
 git config --show-origin --get-all github.account
 ```
+
+`github.account`가 없으면 launcher는 최종 `user.name`이 유효한 GitHub login인지
+확인하고 동일한 인증 profile이 있을 때만 사용합니다. 그렇지 않으면 stock `gh`를
+유지합니다.
 
 해당 invocation에 적용되는 explicit caller token은 account validation error보다
 우선할 수 있지만, 설정 자체를 수정하는 것을 권장합니다.
 
 ### `no GitHub authentication found for account`
 
-정확히 그 login을 stock `gh`로 인증한 뒤 다시 시도합니다.
+명시적인 `github.account` 또는 `GH_AUTO_SWITCHER_ACCOUNT`를 사용했다면 정확히
+그 login을 stock `gh`로 인증한 뒤 다시 시도합니다.
 
 ```sh
 gh auth login --hostname github.com
 gh auth status --hostname github.com
 ```
 
-launcher는 다른 account를 대신 시도하지 않습니다.
+launcher는 다른 account를 대신 시도하지 않습니다. `user.name`에서 자동으로
+선택한 profile이 token을 제공하지 못하는 경우에도 인증 오류를 명확히 보여줍니다.
+profile 자체가 없으면 stock `gh` 동작으로 처리됩니다.
 
 ### `unsupported target host` 또는 `ambiguous GitHub host context`
 

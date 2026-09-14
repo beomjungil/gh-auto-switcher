@@ -11,6 +11,7 @@ pub struct Account {
 pub enum AccountSelection {
     Stock,
     Configured(Account),
+    UserName(Account),
     Override(String),
 }
 
@@ -23,13 +24,21 @@ pub fn resolve_account(cwd: &Path) -> Result<AccountSelection, String> {
         return Ok(AccountSelection::Override(account));
     }
 
-    let Some(username) = get_value(cwd, "github.account")? else {
+    if let Some(username) = get_value(cwd, "github.account")? {
+        validate_account(&username)?;
+        let origin = get_origin(cwd, "github.account")?;
+        return Ok(AccountSelection::Configured(Account { username, origin }));
+    }
+
+    let Some(username) = get_value(cwd, "user.name")? else {
         return Ok(AccountSelection::Stock);
     };
+    if validate_account(&username).is_err() {
+        return Ok(AccountSelection::Stock);
+    }
 
-    validate_account(&username)?;
-    let origin = get_origin(cwd, "github.account")?;
-    Ok(AccountSelection::Configured(Account { username, origin }))
+    let origin = get_origin(cwd, "user.name")?;
+    Ok(AccountSelection::UserName(Account { username, origin }))
 }
 
 pub fn get_value(cwd: &Path, key: &str) -> Result<Option<String>, String> {

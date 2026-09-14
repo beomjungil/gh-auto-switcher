@@ -221,6 +221,20 @@ fn assert_account(fixture: &Fixture, repo: &Path, account: &str) {
 }
 
 const FAKE_GH: &str = r##"#!/bin/sh
+if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+    has_json=false
+    for arg in "$@"; do
+        if [ "$arg" = "--json" ]; then
+            has_json=true
+        fi
+    done
+    if [ "$has_json" = true ]; then
+        if [ -n "${FAKE_GH_AUTH_STATUS_OUTPUT:-}" ]; then
+            printf '%s' "$FAKE_GH_AUTH_STATUS_OUTPUT"
+        fi
+        exit "${FAKE_GH_AUTH_STATUS_EXIT:-0}"
+    fi
+fi
 if [ "$1" = "auth" ] && [ "$2" = "token" ]; then
     user=""
     previous=""
@@ -276,6 +290,195 @@ fn native_git_conditional_includes_select_the_account() {
     let repo = fixture.repo("work/repository");
 
     assert_account(&fixture, &repo, "work-account");
+}
+
+#[test]
+fn matching_user_name_selects_the_authenticated_github_profile() {
+    let fixture = Fixture::new();
+    fixture.write_global("[user]\nname = carter-hp\n");
+    let repo = fixture.repo("repository");
+    let output = fixture
+        .env_command(binary_path().to_str().expect("binary path"))
+        .current_dir(&repo)
+        .args(["exec", "--", "api", "user"])
+        .env("FAKE_GH_AUTH_STATUS_OUTPUT", "success")
+        .output()
+        .expect("run with matching user.name");
+
+    assert!(output.status.success());
+    let log = fs::read_to_string(&fixture.log).expect("read matching profile log");
+    assert!(log.contains("token=<token-carter-hp>"), "{log}");
+}
+
+#[test]
+fn user_name_from_remote_include_selects_the_authenticated_profile() {
+    let fixture = Fixture::new();
+    fs::write(
+        fixture.root.join("work-user.inc"),
+        "[user]\nname = carter-hp\n",
+    )
+    .expect("write work user include");
+    fixture.write_global(
+        "[user]\nname = beomjungil\n[includeIf \"hasconfig:remote.*.url:https://github.com/healingpaper-solution/**\"]\npath = work-user.inc\n",
+    );
+    let repo = fixture.repo("repository");
+    fixture.add_remote(
+        &repo,
+        "https://github.com/healingpaper-solution/repository.git",
+    );
+    let output = fixture
+        .env_command(binary_path().to_str().expect("binary path"))
+        .current_dir(&repo)
+        .args(["exec", "--", "api", "user"])
+        .env("FAKE_GH_AUTH_STATUS_OUTPUT", "success")
+        .output()
+        .expect("run with remote-included user.name");
+
+    assert!(output.status.success());
+    let log = fs::read_to_string(&fixture.log).expect("read remote included profile log");
+    assert!(log.contains("token=<token-carter-hp>"), "{log}");
+}
+
+#[test]
+fn user_name_profile_is_reported_as_the_selected_account() {
+    let fixture = Fixture::new();
+    fixture.write_global("[user]\nname = carter-hp\n");
+    let repo = fixture.repo("repository");
+    let output = fixture
+        .env_command(binary_path().to_str().expect("binary path"))
+        .current_dir(&repo)
+        .args(["auto-switcher", "status"])
+        .env("FAKE_GH_AUTH_STATUS_OUTPUT", "success")
+        .output()
+        .expect("run status with matching user.name");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("account: carter-hp"), "{stdout}");
+    assert!(
+        stdout.contains("account-source: user.name matching gh profile"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn doctor_checks_the_matching_user_name_profile() {
+    let fixture = Fixture::new();
+    fixture.write_global("[user]\nname = carter-hp\n");
+    let repo = fixture.repo("repository");
+    let output = fixture
+        .env_command(binary_path().to_str().expect("binary path"))
+        .current_dir(&repo)
+        .args(["auto-switcher", "doctor"])
+        .env("FAKE_GH_AUTH_STATUS_OUTPUT", "success")
+        .output()
+        .expect("run doctor with matching user.name");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Git account: carter-hp"), "{stdout}");
+    assert!(
+        stdout.contains("GitHub authentication: available"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn unmatched_user_name_preserves_stock_gh_behavior() {
+    let fixture = Fixture::new();
+    fixture.write_global("[user]\nname = carter-hp\n");
+    let repo = fixture.repo("repository");
+    let output = fixture.run_router(&repo, &["exec", "--", "api", "user"]);
+
+    assert!(output.status.success());
+    let log = fs::read_to_string(&fixture.log).expect("read unmatched profile log");
+    assert!(log.contains("token=<>"), "{log}");
+}
+
+#[test]
+fn non_login_user_name_preserves_stock_gh_behavior() {
+    let fixture = Fixture::new();
+    fixture.write_global("[user]\nname = Beom Jungil\n");
+    let repo = fixture.repo("repository");
+    let output = fixture.run_router(&repo, &["exec", "--", "api", "user"]);
+
+    assert!(output.status.success());
+    let log = fs::read_to_string(&fixture.log).expect("read display name log");
+    assert!(log.contains("token=<>"), "{log}");
+}
+
+#[test]
+fn explicit_github_account_overrides_user_name() {
+    let fixture = Fixture::new();
+    fixture.write_global("[user]\nname = carter-hp\n[github]\naccount = explicit-account\n");
+    let repo = fixture.repo("repository");
+    let output = fixture.run_router(&repo, &["exec", "--", "api", "user"]);
+
+    assert!(output.status.success());
+    let log = fs::read_to_string(&fixture.log).expect("read explicit account log");
+    assert!(log.contains("token=<token-explicit-account>"), "{log}");
+}
+
+#[test]
+fn process_account_override_takes_precedence_over_user_name() {
+    let fixture = Fixture::new();
+    fixture.write_global("[user]\nname = carter-hp\n");
+    let repo = fixture.repo("repository");
+    let output = fixture
+        .env_command(binary_path().to_str().expect("binary path"))
+        .current_dir(&repo)
+        .args(["exec", "--", "api", "user"])
+        .env("GH_AUTO_SWITCHER_ACCOUNT", "beomjungil")
+        .output()
+        .expect("run with process account override");
+
+    assert!(output.status.success());
+    let log = fs::read_to_string(&fixture.log).expect("read process override log");
+    assert!(log.contains("token=<token-beomjungil>"), "{log}");
+}
+
+#[test]
+fn missing_implicit_profile_does_not_hide_auth_status_failures() {
+    let fixture = Fixture::new();
+    fixture.write_global("[user]\nname = carter-hp\n");
+    let repo = fixture.repo("repository");
+    let output = fixture
+        .env_command(binary_path().to_str().expect("binary path"))
+        .current_dir(&repo)
+        .args(["exec", "--", "api", "user"])
+        .env("FAKE_GH_AUTH_STATUS_EXIT", "7")
+        .output()
+        .expect("run with failed auth status");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("failed to inspect GitHub authentication profiles"),
+        "{stderr}"
+    );
+    assert!(!fixture.log.exists());
+}
+
+#[test]
+fn authenticated_implicit_profile_with_unavailable_token_fails_clearly() {
+    let fixture = Fixture::new();
+    fixture.write_global("[user]\nname = carter-hp\n");
+    let repo = fixture.repo("repository");
+    let output = fixture
+        .env_command(binary_path().to_str().expect("binary path"))
+        .current_dir(&repo)
+        .args(["exec", "--", "api", "user"])
+        .env("FAKE_GH_AUTH_STATUS_OUTPUT", "failed")
+        .env("FAKE_GH_AUTH_EXIT", "7")
+        .output()
+        .expect("run with unavailable implicit profile token");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("no GitHub authentication found for account"),
+        "{stderr}"
+    );
 }
 
 #[test]

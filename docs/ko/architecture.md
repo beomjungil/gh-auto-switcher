@@ -22,7 +22,7 @@ flowchart TD
     launcher --> target["Target resolver"]
     target --> signals["Git remote와 인식된 명령 인자"]
     launcher --> config["Git config resolver"]
-    config --> account["git config github.account"]
+    config --> account["github.account 또는 user.name"]
     launcher --> lookup["Token lookup"]
     lookup --> auth["real gh auth token --user ACCOUNT"]
     launcher --> realgh["real gh"]
@@ -42,6 +42,8 @@ working directory에서 설치된 Git을 실행합니다.
 ```sh
 git config --get --null github.account
 git config --show-origin --get --null github.account
+git config --get --null user.name
+git config --show-origin --get --null user.name
 git config --get-regexp '^remote\..*\.url$'
 ```
 
@@ -55,10 +57,11 @@ Git subprocess는 호출자의 Git 관련 환경을 상속하므로 Git이 다�
 - branch와 remote 상태;
 - `GIT_CONFIG_*` command-scope 설정.
 
-launcher가 특별한 의미를 부여하는 것은 최종 `github.account` 값뿐입니다.
-`user.name`이나 `user.email`은 GitHub login으로 취급하지 않습니다. account는
-`gh auth token --user`에 안전하게 전달할 수 있도록 ASCII 문자·숫자·하이픈으로
-구성된 1–39자여야 합니다.
+launcher가 특별한 의미를 부여하는 것은 명시적인 `github.account` 값입니다.
+이 key가 없으면 유효한 `user.name`을 account 후보로 보고, 동일한 GitHub CLI
+인증 profile이 있을 때만 사용합니다. `user.email`은 사용하지 않습니다.
+명시 account 값은 `gh auth token --user`에 안전하게 전달할 수 있도록 ASCII
+문자·숫자·하이픈으로 구성된 1–39자여야 합니다.
 
 ### `includeIf`를 다시 구현하지 않는 이유
 
@@ -78,18 +81,23 @@ Git 동작을 지원한다고 주장하지 않습니다.
 4. token이 있으면 caller 환경을 그대로 두고 configured account의 token을 조회하지
    않습니다. account validation error도 이 경우에는 노출하지 않습니다. routing
    context를 확인하기 위해 Git은 여전히 실행될 수 있습니다.
-5. 그렇지 않으면 Git에서 최종 `github.account`를 읽습니다.
-6. 충돌 없는 `github.com` target에 configured account가 있으면 실제
-   `gh auth token --hostname github.com --user ACCOUNT`를 실행합니다.
-7. token을 비공개로 캡처하고 token 조회 중 caller token 변수를 제거한 뒤, 결과를
+5. 그렇지 않으면 Git에서 최종 `github.account`를 읽습니다. 이 key가 없으면
+   최종 `user.name`을 읽습니다.
+6. 유효한 `user.name` 후보는 인증된 GitHub CLI profile과 비교합니다. 일치하는
+   profile이 없으면 account 오류가 아니라 stock 경로를 사용합니다.
+7. 명시 account 또는 일치한 implicit `user.name` account가 있고 target이
+   충돌 없는 `github.com`이면 실제 `gh auth token --hostname github.com
+   --user ACCOUNT`를 실행합니다.
+8. token을 비공개로 캡처하고 token 조회 중 caller token 변수를 제거한 뒤, 결과를
    자식 `gh`의 `GH_TOKEN`으로만 전달합니다.
-8. `gh auth switch`를 호출하거나 `hosts.yml`을 바꾸거나 token을 저장·출력하지
+9. `gh auth switch`를 호출하거나 `hosts.yml`을 바꾸거나 token을 저장·출력하지
    않습니다.
 
-account도 caller token도 없으면 의도적인 stock 경로입니다. 이 경우 launcher는
-host를 임의로 만들지 않고 host 확인을 생략할 수 있으며 실제 `gh`를 변경 없이
-실행합니다. 반대로 설정된 account에 저장 token이 없으면 token 조회가 실패하고
-다른 account로 fallback하지 않습니다.
+일치하는 `user.name` profile이 없고 caller token도 없으면 의도적인 stock 경로입니다.
+이 경우 launcher는 host를 임의로 만들지 않고 host 확인을 생략할 수 있으며 실제
+`gh`를 변경 없이 실행합니다. 반대로 명시 account가 token을 제공하지 못하면 token
+조회가 실패하며 다른 account로 fallback하지 않습니다. 일치하는 implicit profile이
+존재하지만 token을 제공하지 못하는 경우도 명확히 실패합니다.
 
 `auth`, `help`, `version`, `completion`, `config`, `alias` 같은 control-plane
 명령은 account token 주입을 건너뛰고 실제 `gh`로 전달합니다.
@@ -146,12 +154,14 @@ script, 다른 shell function이 직접 부르는 `gh`는 의도적으로 launch
 
 구현은 account나 host를 추측하기보다 명확히 실패합니다.
 
-- 비어 있거나 잘못된 `github.account`는 실패합니다.
-- token이 없는 configured account는 실패하며 fallback하지 않습니다.
+- 비어 있거나 잘못된 명시 `github.account`는 실패합니다.
+- token이 없는 명시 account는 실패하며 fallback하지 않습니다.
 - host 신호 충돌은 token 주입 전에 실패합니다.
 - unsupported Enterprise host의 자동 routing은 해당 host용 explicit caller token이
   이미 있을 때를 제외하고 실패합니다.
-- account 설정과 caller token이 모두 없으면 stock `gh`를 유지합니다.
+- 선택 가능한 account가 없고 caller token도 없으면 stock `gh`를 유지합니다.
+- 유효한 `user.name`과 일치하는 profile이 없으면 stock `gh`를 유지합니다.
+- 일치하는 implicit profile이 token을 제공하지 못하면 fallback하지 않고 실패합니다.
 - 실제 `gh` 경로가 없거나 실행 권한이 없거나 launcher 자신을 가리키면 실패합니다.
 - token lookup 출력은 launcher terminal로 전달되지 않습니다.
 
@@ -161,7 +171,7 @@ explicit token을 제공하거나 실제 `gh`를 직접 호출하세요.
 
 ## 검증된 동작
 
-현재 suite는 unit test 5개와 integration test 34개로 구성됩니다. integration
+현재 suite는 unit test 5개와 integration test 44개로 구성됩니다. integration
 test는 실제 local Git 실행 파일, 격리된 임시 Git 설정, 가짜 `gh` 실행 파일, 실제
 Bash/Zsh/Fish 프로세스를 사용합니다. 다음을 검증합니다.
 
@@ -169,7 +179,8 @@ Bash/Zsh/Fish 프로세스를 사용합니다. 다음을 검증합니다.
   `hasconfig:remote.*.url`;
 - 중첩 include, local/global/command-scope 우선순위, linked worktree, `cd` 없는
   branch·remote 변경, 상속된 `GIT_CONFIG_*` 값;
-- 누락·잘못된·문법 오류 account 설정;
+- 명시·implicit account 선택, matching GitHub CLI profile, 잘못된 표시 이름,
+  누락 profile, 잘못된 account 설정;
 - explicit token 우선순위, token 격리, host 충돌, unsupported host, target parser의
   payload 경계;
 - 인자 quoting과 non-UTF-8 인자, stdin, exit status, signal, self-recursion,
