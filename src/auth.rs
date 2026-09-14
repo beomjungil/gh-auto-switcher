@@ -2,6 +2,7 @@ use serde::Deserialize;
 use serde_yaml::Value;
 use std::collections::BTreeMap;
 use std::env;
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -25,8 +26,7 @@ pub fn profile_exists(account: &str) -> Result<bool, String> {
         }
     };
 
-    let profiles = github_profile_names(&contents)
-        .map_err(|_| "failed to parse GitHub authentication profiles".to_string())?;
+    let profiles = parse_profile_names(&contents)?;
     Ok(profiles
         .iter()
         .any(|profile| profile.eq_ignore_ascii_case(account)))
@@ -44,9 +44,11 @@ fn hosts_path() -> Result<PathBuf, String> {
 }
 
 fn non_empty_env_path(name: &str) -> Option<PathBuf> {
-    env::var_os(name)
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
+    non_empty_path(env::var_os(name))
+}
+
+fn non_empty_path(value: Option<OsString>) -> Option<PathBuf> {
+    value.filter(|value| !value.is_empty()).map(PathBuf::from)
 }
 
 fn resolve_hosts_path(
@@ -55,10 +57,24 @@ fn resolve_hosts_path(
     default_config_dir: Option<PathBuf>,
 ) -> Result<PathBuf, String> {
     config_dir
+        .filter(|path| !path.as_os_str().is_empty())
         .map(|path| path.join("hosts.yml"))
-        .or_else(|| xdg_config_home.map(|path| path.join("gh/hosts.yml")))
-        .or_else(|| default_config_dir.map(|path| path.join("hosts.yml")))
+        .or_else(|| {
+            xdg_config_home
+                .filter(|path| !path.as_os_str().is_empty())
+                .map(|path| path.join("gh/hosts.yml"))
+        })
+        .or_else(|| {
+            default_config_dir
+                .filter(|path| !path.as_os_str().is_empty())
+                .map(|path| path.join("hosts.yml"))
+        })
         .ok_or_else(|| "cannot locate GitHub authentication profiles".to_string())
+}
+
+fn parse_profile_names(contents: &str) -> Result<Vec<String>, String> {
+    github_profile_names(contents)
+        .map_err(|_| "failed to parse GitHub authentication profiles".to_string())
 }
 
 fn github_profile_names(contents: &str) -> Result<Vec<String>, serde_yaml::Error> {
@@ -117,7 +133,8 @@ pub fn token_for(real_gh: &Path, account: &str) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{github_profile_names, resolve_hosts_path};
+    use super::{github_profile_names, non_empty_path, parse_profile_names, resolve_hosts_path};
+    use std::ffi::OsString;
     use std::path::PathBuf;
 
     #[test]
@@ -128,6 +145,16 @@ mod tests {
         .expect("parse hosts");
 
         assert_eq!(profiles, ["beomjungil", "carter-hp", "carter-hp"]);
+    }
+
+    #[test]
+    fn reads_quoted_and_commented_profile_names() {
+        let profiles = github_profile_names(
+            "# GitHub CLI profiles\ngithub.com:\n  users:\n    \"Carter-HP\": {} # stored profile\n  user: \"Carter-HP\" # active profile\n",
+        )
+        .expect("parse hosts");
+
+        assert_eq!(profiles, ["Carter-HP", "Carter-HP"]);
     }
 
     #[test]
@@ -151,6 +178,24 @@ mod tests {
     #[test]
     fn rejects_malformed_hosts() {
         assert!(github_profile_names("github.com: [").is_err());
+        assert!(github_profile_names("github.com:\n  users: []\n").is_err());
+        assert!(github_profile_names("github.com:\n  user: []\n").is_err());
+    }
+
+    #[test]
+    fn accepts_empty_hosts_configuration_without_profiles() {
+        assert!(github_profile_names("")
+            .expect("parse empty hosts")
+            .is_empty());
+    }
+
+    #[test]
+    fn sanitizes_parse_errors_without_yaml_contents() {
+        let error = parse_profile_names("github.com:\n  user: secret-sentinel\n  users: []\n")
+            .expect_err("malformed hosts");
+
+        assert_eq!(error, "failed to parse GitHub authentication profiles");
+        assert!(!error.contains("secret-sentinel"));
     }
 
     #[test]
@@ -161,6 +206,20 @@ mod tests {
         assert!(profiles
             .iter()
             .any(|profile| profile.eq_ignore_ascii_case("carter-hp")));
+    }
+
+    #[test]
+    fn ignores_empty_environment_paths() {
+        assert!(non_empty_path(Some(OsString::new())).is_none());
+        assert_eq!(
+            resolve_hosts_path(
+                Some(PathBuf::new()),
+                Some(PathBuf::from("/xdg")),
+                Some(PathBuf::from("/home/.config/gh")),
+            )
+            .expect("empty custom config path should fall back"),
+            PathBuf::from("/xdg/gh/hosts.yml")
+        );
     }
 
     #[test]
