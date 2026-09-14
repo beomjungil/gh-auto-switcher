@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+
+project_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+manifest="$project_dir/Cargo.toml"
+binary="$project_dir/target/release/gh-auto-switcher"
+
+if ! command -v cargo >/dev/null 2>&1; then
+    printf '%s\n' 'gh-auto-switcher: Cargo/Rust is required for local extension execution' >&2
+    exit 1
+fi
+
+cargo build --release --locked --manifest-path "$manifest" >&2
+exec "$binary" "$@"

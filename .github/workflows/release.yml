@@ -1,0 +1,263 @@
+name: release
+
+on:
+  push:
+    tags:
+      - v*
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  authorize:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Verify release context and actors
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ORIGINAL_ACTOR: ${{ github.event.sender.login }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+        run: |
+          set -euo pipefail
+
+          test "$GITHUB_REPOSITORY" = "beomjungil/gh-auto-switcher"
+          test "$GITHUB_EVENT_NAME" = "push"
+          case "$GITHUB_REF" in
+            refs/tags/v*) ;;
+            *) exit 1 ;;
+          esac
+
+          for actor in "$ORIGINAL_ACTOR" "$TRIGGERING_ACTOR"; do
+            test -n "$actor"
+            actor_type=$(gh api "users/$actor" --jq .type)
+            test "$actor_type" = "User"
+            authorized=$(gh api \
+              "repos/$GITHUB_REPOSITORY/collaborators/$actor/permission" \
+              --jq '
+                (.role_name == "admin"
+                  or .role_name == "maintain"
+                  or .permission == "admin")
+              ')
+            test "$authorized" = true
+          done
+
+  test:
+    needs: authorize
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Install Rust
+        run: rustup toolchain install 1.93.1 --profile minimal
+      - name: Install shell test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes fish zsh
+      - name: Verify test dependencies
+        run: |
+          command -v gh
+          command -v bash
+          command -v zsh
+          command -v fish
+      - name: Run tests
+        run: cargo +1.93.1 test --locked
+      - name: Create workflow test environment
+        run: |
+          python3 -m venv "$RUNNER_TEMP/workflow-test-venv"
+          "$RUNNER_TEMP/workflow-test-venv/bin/pip" install \
+            --disable-pip-version-check \
+            PyYAML==6.0.2
+      - name: Test release workflow
+        run: |
+          "$RUNNER_TEMP/workflow-test-venv/bin/python" \
+            tests/release_workflow_test.py
+
+  build:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            asset: gh-auto-switcher-linux-amd64
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            asset: gh-auto-switcher-darwin-amd64
+          - runner: macos-14
+            target: aarch64-apple-darwin
+            asset: gh-auto-switcher-darwin-arm64
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Install Rust
+        shell: bash
+        run: |
+          rustup toolchain install 1.93.1 \
+            --profile minimal \
+            --target "${{ matrix.target }}"
+      - name: Build release binary
+        shell: bash
+        run: |
+          cargo +1.93.1 build \
+            --locked \
+            --release \
+            --target "${{ matrix.target }}"
+      - name: Stage release asset
+        shell: bash
+        run: |
+          cp "target/${{ matrix.target }}/release/gh-auto-switcher" \
+            "${{ matrix.asset }}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
+          if-no-files-found: error
+
+  publish-assets:
+    needs:
+      - authorize
+      - test
+      - build
+    runs-on: ubuntu-latest
+    environment:
+      name: release
+    permissions:
+      contents: write
+    steps:
+      - name: Verify publishing actor
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ORIGINAL_ACTOR: ${{ github.event.sender.login }}
+          ACTOR: ${{ github.actor }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+        run: |
+          set -euo pipefail
+
+          test "$GITHUB_REPOSITORY" = "beomjungil/gh-auto-switcher"
+          test "$GITHUB_EVENT_NAME" = "push"
+          case "$GITHUB_REF" in
+            refs/tags/v*) ;;
+            *) exit 1 ;;
+          esac
+
+          for actor in "$ORIGINAL_ACTOR" "$ACTOR" "$TRIGGERING_ACTOR"; do
+            test -n "$actor"
+            actor_type=$(gh api "users/$actor" --jq .type)
+            test "$actor_type" = "User"
+            authorized=$(gh api \
+              "repos/$GITHUB_REPOSITORY/collaborators/$actor/permission" \
+              --jq '
+                (.role_name == "admin"
+                  or .role_name == "maintain"
+                  or .permission == "admin")
+              ')
+            test "$authorized" = true
+          done
+      - name: Verify tag identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          case "$tag" in
+            v*/*) exit 1 ;;
+          esac
+          tag_object=$(gh api \
+            "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" \
+            --jq '[.object.type, .object.sha] | @tsv')
+          IFS=$'\t' read -r object_type object_sha <<< "$tag_object"
+          if test "$object_type" = tag; then
+            object_sha=$(gh api \
+              "repos/$GITHUB_REPOSITORY/git/tags/$object_sha" \
+              --jq .object.sha)
+          fi
+          test "$object_type" = commit -o "$object_type" = tag
+          test "$object_sha" = "$GITHUB_SHA"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: gh-auto-switcher-*
+          path: dist
+          merge-multiple: true
+      - name: Verify assets and create checksums
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          expected_assets=(
+            gh-auto-switcher-linux-amd64
+            gh-auto-switcher-darwin-amd64
+            gh-auto-switcher-darwin-arm64
+          )
+          shopt -s dotglob nullglob
+          paths=(*)
+          test "${#paths[@]}" = "${#expected_assets[@]}"
+          for path in "${paths[@]}"; do
+            test -f "$path"
+            test ! -L "$path"
+            case "$path" in
+              gh-auto-switcher-linux-amd64|\
+              gh-auto-switcher-darwin-amd64|\
+              gh-auto-switcher-darwin-arm64) ;;
+              *) exit 1 ;;
+            esac
+          done
+          for asset in "${expected_assets[@]}"; do
+            test -s "$asset"
+          done
+          sha256sum "${expected_assets[@]}" > checksums.txt
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          if gh release view "$tag" \
+            --repo "$GITHUB_REPOSITORY" \
+            >/dev/null 2>&1; then
+            printf '%s\n' "release already exists: $tag" >&2
+            exit 1
+          fi
+          release_flags=(
+            --repo "$GITHUB_REPOSITORY"
+            --verify-tag
+            --draft
+            --generate-notes
+            --title "gh-auto-switcher ${tag#v}"
+          )
+          if [[ "$tag" == *-* ]]; then
+            release_flags+=(--prerelease)
+          fi
+          gh release create "$tag" "${release_flags[@]}"
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            -- \
+            dist/gh-auto-switcher-linux-amd64 \
+            dist/gh-auto-switcher-darwin-amd64 \
+            dist/gh-auto-switcher-darwin-arm64 \
+            dist/checksums.txt
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release edit "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft=false
